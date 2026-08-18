@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from collections import Counter, defaultdict
@@ -333,7 +334,18 @@ def scan_workflows(session_dir: Path, rates: dict) -> list[dict]:
     return out
 
 
-def git_context(cwd: str) -> dict:
+TICKET_RE = re.compile(r"\b([A-Z]{2,10}-\d+)\b")
+
+
+def tickets_in(*texts: str | None) -> set[str]:
+    found: set[str] = set()
+    for t in texts:
+        if t:
+            found.update(TICKET_RE.findall(t))
+    return found
+
+
+def git_context(cwd: str, session_start_at: str | None) -> dict:
     def run(*args: str) -> str | None:
         try:
             res = subprocess.run(
@@ -353,14 +365,55 @@ def git_context(cwd: str) -> dict:
     ctx["uncommitted"] = run("git", "diff", "--shortstat")
     ctx["staged"] = run("git", "diff", "--cached", "--shortstat")
 
-    pr = run(
-        "gh", "pr", "view", "--json", "number,title,url,state,additions,deletions"
+    pr_json = run(
+        "gh", "pr", "view", "--json",
+        "number,title,url,state,additions,deletions,body,headRefName",
     )
-    if pr:
+    pr = None
+    if pr_json:
         try:
-            ctx["pr"] = json.loads(pr)
+            pr = json.loads(pr_json)
+            ctx["pr"] = pr
         except json.JSONDecodeError:
             pass
+
+    # All ticket ids this session is plausibly linked to: the branch name and
+    # (if a PR exists) its title/body — not just the one id a caller might parse
+    # out of the branch name alone. A PR closing/mentioning several tickets, or a
+    # branch named after one ticket whose PR body names siblings, is common enough
+    # that a single-valued `ticket:` field silently drops the others.
+    found_tickets = tickets_in(ctx["branch"])
+    if pr:
+        found_tickets |= tickets_in(pr.get("title"), pr.get("body"), pr.get("headRefName"))
+    ctx["tickets"] = sorted(found_tickets)
+
+    # Companion PRs: this session's own PR may not be the only one. A monorepo
+    # change spanning a package boundary (e.g. a compiled-lib + its consumer)
+    # sometimes ships as two PRs from the same continuous session. Search the
+    # user's own PRs opened since this session started for any that mention one
+    # of the tickets already found, excluding the current-branch PR itself.
+    related_prs = []
+    if found_tickets and session_start_at:
+        since_date = session_start_at[:10]
+        list_json = run(
+            "gh", "pr", "list", "--author", "@me", "--state", "all",
+            "--search", f"created:>={since_date}",
+            "--json", "number,title,url,state,headRefName,body,createdAt",
+            "--limit", "50",
+        )
+        if list_json:
+            try:
+                for other in json.loads(list_json):
+                    if pr and other.get("number") == pr.get("number"):
+                        continue
+                    if tickets_in(other.get("title"), other.get("body"), other.get("headRefName")) & found_tickets:
+                        related_prs.append(
+                            {"number": other["number"], "url": other["url"], "state": other["state"]}
+                        )
+            except json.JSONDecodeError:
+                pass
+    ctx["related_prs"] = related_prs
+
     return ctx
 
 
@@ -456,6 +509,7 @@ def main() -> None:
     churned = {p: v for p, v in info["churn"].items() if v > 1}
 
     span_ms = None
+    first_message_at = min(info["timestamps"]) if info["timestamps"] else None
     if len(info["timestamps"]) >= 2:
         from datetime import datetime
 
@@ -475,6 +529,7 @@ def main() -> None:
         "cwd": resolved_cwd,
         "cli_version": info["meta"]["version"],
         "first_prompt": info["prompts"][0] if info["prompts"] else None,
+        "first_message_at": first_message_at,
         "prompt_count": len(info["prompts"]),
         "api_requests": totals["requests"],
         "measured_active_ms": info["turn_ms"],
@@ -503,7 +558,7 @@ def main() -> None:
         "agent_spawns": info["agent_spawns"],
         "churn": dict(sorted(churned.items(), key=lambda kv: -kv[1])),
         "files_touched": len(info["churn"]),
-        "git": git_context(resolved_cwd),
+        "git": git_context(resolved_cwd, first_message_at),
     }
     json.dump(report, sys.stdout, indent=2)
     sys.stdout.write("\n")
