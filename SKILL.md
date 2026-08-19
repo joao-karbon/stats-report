@@ -70,7 +70,22 @@ The script cannot infer these. Write them from what actually happened in this se
 
 Use `title`, `recap`, and `first_prompt` from the JSON as memory aids, not as the text — `recap` is written for a returning user and reads wrong in a log.
 
-Tickets and PRs are **plural, not singular** — `git.tickets` is every ticket id found across the branch name and the current PR's title/body; `git.related_prs` is every other PR of yours since this session started that mentions one of those ticket ids (catches a cross-package change that shipped as two PRs from one continuous session). Report all of them, not just the first. If `git.tickets` is empty, use `none`.
+Tickets and PRs are **plural, not singular** — `git.tickets` is every ticket id this session is
+actually driving: found across the branch name, the PR title/head-ref, and any id targeted by a
+`Closes`/`Fixes`/`Resolves` keyword in the PR body. `git.related_prs` is every other PR of yours
+since this session started that mentions one of those ticket ids (catches a cross-package change
+that shipped as two PRs from one continuous session). Report all of them, not just the first. If
+`git.tickets` is empty, use `none`.
+
+**`git.mentioned_tickets` is a separate field — never run step 4 on it.** These are ticket ids
+that appear somewhere in the PR body *without* a closing keyword: pure background/lineage prose
+like "builds on the mobile analytics catalogue (CKTS-276)". Relying on an agent to eyeball the PR
+body and filter these out by hand failed three times in a row — most recently CKTS-276 itself,
+which got a cost comment and an estimate bump for a session that never touched it, caught only
+after the fact and reverted — so the split is now done in `collect.py` before you ever see the
+JSON, not left as a judgment call. If `git.mentioned_tickets` is non-empty, name those ids in your
+step-5 report and ask the user whether any should actually be attributed; do not decide that
+yourself, and do not fold them into `git.tickets`.
 
 ## 3. Post
 
