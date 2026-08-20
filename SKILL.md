@@ -234,3 +234,27 @@ What each one means, when it trips:
 - **Write share > 0.5** — large payloads were pulled into context (MCP dumps, long files, verbose logs) rather than read out-of-band. This is the one that stock advice always misses.
 
 State whichever is actually anomalous. If nothing trips, say nothing — a report with no advice is better than a report repeating a stock line.
+
+## 5. Optional: writing a cost tier back to an issue tracker
+
+Some setups extend this skill to also write a recomputed cost tier into an issue tracker's
+estimate/points field for the ticket this session touched. If yours does, don't treat "cost is
+additive across sessions, so the tier only holds steady or rises" as license to always overwrite
+whatever is already there.
+
+That property only holds when you're comparing this session's recomputed tier against a tier
+*this same tracking mechanism* previously wrote to that ticket — summing another session's cost
+onto a running total can't produce a lower total. It says nothing about a value that was already
+on the ticket for an unrelated reason, e.g. a human's up-front scope estimate set at ticket
+creation, sized for the ticket's full work rather than for cost observed so far.
+
+Before writing:
+
+- **No prior cost-tracking history on this ticket** (this is the first session your tooling has
+  recorded against it): write the recomputed tier unconditionally, even if it's lower than
+  whatever estimate is already there. There's no accumulated-cost history for a decrease to
+  violate — a pre-existing scope estimate above a freshly-computed single-session tier is the
+  normal case, not an exception to guard against.
+- **Prior sessions are already tracked**: the new cumulative tier is guaranteed to be ≥ the last
+  tracked value. If it somehow comes out lower, your tier boundaries changed underneath you —
+  stop and flag it instead of silently overwriting.
