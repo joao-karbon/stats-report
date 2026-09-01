@@ -336,12 +336,34 @@ def scan_workflows(session_dir: Path, rates: dict) -> list[dict]:
 
 TICKET_RE = re.compile(r"\b([A-Z]{2,10}-\d+)\b")
 
+# GitHub/Linear closing-keyword prefixes. A ticket id in the PR body only counts
+# as one this session is driving if it's the target of one of these — a bare
+# mention elsewhere in the body ("see CKTS-276 for background", "related to
+# CKTS-276") is context, not attribution, and must never get this session's
+# cost written to it. Case-insensitive; comma/and-separated ids after the
+# keyword are all closing targets (GitHub supports "Closes CKTS-1, CKTS-2").
+CLOSING_KEYWORD_RE = re.compile(
+    r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s*"
+    r"((?:[A-Z]{2,10}-\d+)(?:\s*(?:,|and)\s*[A-Z]{2,10}-\d+)*)",
+    re.IGNORECASE,
+)
+
 
 def tickets_in(*texts: str | None) -> set[str]:
     found: set[str] = set()
     for t in texts:
         if t:
             found.update(TICKET_RE.findall(t))
+    return found
+
+
+def closing_tickets_in(text: str | None) -> set[str]:
+    """Ticket ids that are the explicit target of a closing keyword in `text`."""
+    found: set[str] = set()
+    if not text:
+        return found
+    for match in CLOSING_KEYWORD_RE.finditer(text):
+        found.update(TICKET_RE.findall(match.group(1)))
     return found
 
 
@@ -377,15 +399,27 @@ def git_context(cwd: str, session_start_at: str | None) -> dict:
         except json.JSONDecodeError:
             pass
 
-    # All ticket ids this session is plausibly linked to: the branch name and
-    # (if a PR exists) its title/body — not just the one id a caller might parse
-    # out of the branch name alone. A PR closing/mentioning several tickets, or a
-    # branch named after one ticket whose PR body names siblings, is common enough
-    # that a single-valued `ticket:` field silently drops the others.
+    # Tickets this session is actually driving: the branch name, the PR title,
+    # the PR's head ref, and any id targeted by a closing keyword in the PR body
+    # ("Closes CKTS-276", "Fixes CKTS-1, CKTS-2"). A PR closing several tickets,
+    # or a branch named after one ticket whose title/closing-line names siblings,
+    # is common enough that a single-valued `ticket:` field silently drops the
+    # others — hence the union across all four sources.
+    #
+    # Deliberately excluded: a bare ticket id mentioned in the PR body outside a
+    # closing keyword. Three separate sessions attached cost to a ticket that was
+    # only named in a body for background/context ("see CKTS-276 for context")
+    # and never actually worked on this session — scanning the whole body flat
+    # cannot tell "closing" from "referencing". Those go in `mentioned_tickets`
+    # instead: never auto-attach cost there, surface them and ask.
     found_tickets = tickets_in(ctx["branch"])
+    mentioned_tickets: set[str] = set()
     if pr:
-        found_tickets |= tickets_in(pr.get("title"), pr.get("body"), pr.get("headRefName"))
+        found_tickets |= tickets_in(pr.get("title"), pr.get("headRefName"))
+        found_tickets |= closing_tickets_in(pr.get("body"))
+        mentioned_tickets = tickets_in(pr.get("body")) - found_tickets
     ctx["tickets"] = sorted(found_tickets)
+    ctx["mentioned_tickets"] = sorted(mentioned_tickets)
 
     # Companion PRs: this session's own PR may not be the only one. A monorepo
     # change spanning a package boundary (e.g. a compiled-lib + its consumer)
